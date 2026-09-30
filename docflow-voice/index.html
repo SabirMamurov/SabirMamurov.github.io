@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Голосовой ввод</title>
+<meta name="robots" content="noindex">
+<!--
+  Окошко записи голоса для «Документов продаж».
+  Браузер даёт микрофон только страницам на https, а система работает по http в локальной сети.
+  Поэтому запись идёт здесь (https), а распознанный текст уходит обратно в окно системы через postMessage.
+  Страница ничего не хранит и никуда не отправляет, кроме окна, которое её открыло. Речь распознаёт браузер (Chrome/Edge).
+-->
+<style>
+  :root { --bg:#f5f4f0; --surface:#fff; --text:#1b1b19; --muted:#6a6862; --line:#e2e0d9; --accent:#1d6b57; --accent-fg:#fff; --danger:#b3261e; color-scheme: light; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#121311; --surface:#1a1b19; --text:#ecebe6; --muted:#a3a19a; --line:#2e2f2c; --accent:#4fb896; --accent-fg:#0d1a15; --danger:#f2877e; color-scheme: dark; } }
+  * { box-sizing: border-box; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--text); font:14px/1.45 ui-sans-serif,-apple-system,"Segoe UI",Roboto,Arial,sans-serif; }
+  body { display:flex; flex-direction:column; padding:16px; gap:12px; }
+  header { display:flex; align-items:center; gap:10px; }
+  .mic { width:44px; height:44px; border-radius:50%; display:grid; place-items:center; background:var(--surface); border:1px solid var(--line); flex-shrink:0; }
+  .rec .mic { background:var(--danger); border-color:var(--danger); color:#fff; animation:pulse 1.2s ease-out infinite; }
+  @keyframes pulse { 0%{box-shadow:0 0 0 0 rgb(179 38 30 / .45)} 100%{box-shadow:0 0 0 14px rgb(179 38 30 / 0)} }
+  .status { font-weight:600; }
+  .sub { color:var(--muted); font-size:12.5px; }
+  .text { flex:1; min-height:90px; overflow:auto; background:var(--surface); border:1px solid var(--line); border-radius:10px; padding:10px 12px; font-size:15px; white-space:pre-wrap; }
+  .text .live { color:var(--muted); }
+  .text:empty::before { content:"Говорите — текст появится здесь и сразу в карточке."; color:var(--muted); }
+  .row { display:flex; gap:8px; }
+  button { flex:1; height:40px; border-radius:10px; border:1px solid var(--line); background:var(--surface); color:var(--text); font:inherit; font-weight:600; cursor:pointer; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:var(--accent-fg); }
+  .err { color:var(--danger); font-size:13px; }
+  .tip { color:var(--muted); font-size:12px; }
+  kbd { border:1px solid var(--line); border-radius:4px; padding:0 4px; font:inherit; font-size:11px; }
+</style>
+</head>
+<body>
+  <header>
+    <div class="mic" aria-hidden="true">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M19 10v1a7 7 0 0 1-14 0v-1"/><path d="M12 18v4"/></svg>
+    </div>
+    <div>
+      <div class="status" id="status">Подключаю микрофон…</div>
+      <div class="sub" id="sub">Разрешите доступ к микрофону, если браузер спросит</div>
+    </div>
+  </header>
+  <div class="text" id="text"></div>
+  <div class="err" id="err" hidden></div>
+  <div class="row">
+    <button id="toggle">Пауза</button>
+    <button id="done" class="primary">Готово</button>
+  </div>
+  <div class="tip">«запятая», «новая строка» — знаки. <kbd>Enter</kbd> — готово, <kbd>Esc</kbd> — отмена.</div>
+
+<script>
+(() => {
+  const params = new URLSearchParams(location.search);
+  const target = params.get("origin");          // окно системы, которому отдаём текст
+  const demo = params.get("demo") === "1";      // проверка связки без микрофона
+  const opener = window.opener;
+  const $ = (id) => document.getElementById(id);
+  const textEl = $("text"), statusEl = $("status"), subEl = $("sub"), errEl = $("err"), toggleBtn = $("toggle");
+  let finals = "", recognizing = false, wanted = true, rec = null;
+
+  const send = (type, text) => {
+    if (opener && target) { try { opener.postMessage({ source: "docflow-voice", type, text }, target); } catch (e) {} }
+  };
+  const render = (live) => {
+    textEl.textContent = finals;
+    if (live) { const s = document.createElement("span"); s.className = "live"; s.textContent = (finals ? " " : "") + live; textEl.appendChild(s); }
+    textEl.scrollTop = textEl.scrollHeight;
+  };
+  const setState = (on) => {
+    recognizing = on;
+    document.body.classList.toggle("rec", on);
+    statusEl.textContent = on ? "Слушаю…" : "Пауза";
+    subEl.textContent = on ? "Говорите свободно. Текст сразу попадает в карточку." : "Нажмите «Продолжить», чтобы говорить дальше";
+    toggleBtn.textContent = on ? "Пауза" : "Продолжить";
+  };
+  const showErr = (m) => { errEl.hidden = false; errEl.textContent = m; };
+  const finish = () => { wanted = false; try { rec && rec.stop(); } catch (e) {} send("done", ""); window.close(); };
+  const cancel = () => { wanted = false; try { rec && rec.abort(); } catch (e) {} send("cancel", ""); window.close(); };
+
+  if (!opener || !target) showErr("Это окно открывается кнопкой «Голосом» в системе. Текст ниже можно скопировать вручную.");
+
+  const onFinal = (t) => { t = t.trim(); if (!t) return; finals += (finals ? " " : "") + t; render(""); send("final", t); };
+
+  if (demo) {
+    setState(true);
+    const parts = ["сеть Ярче запятая отсрочка 30 дней", "лимит 500 тысяч", "по продажам Иванова Мария 8 913 123 45 67"];
+    parts.forEach((p, i) => setTimeout(() => { send("interim", p.slice(0, 8)); setTimeout(() => onFinal(p), 150); }, 300 + i * 400));
+  } else {
+    const C = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!C) {
+      statusEl.textContent = "Браузер не распознаёт речь";
+      subEl.textContent = "Откройте систему в Google Chrome или Microsoft Edge";
+    } else {
+      rec = new C();
+      rec.lang = "ru-RU"; rec.continuous = true; rec.interimResults = true;
+      rec.onstart = () => setState(true);
+      rec.onresult = (e) => {
+        let live = "";
+        for (let i = e.resultIndex; i < e.results.length; i++) {
+          const r = e.results[i];
+          if (r.isFinal) onFinal(r[0].transcript); else live += r[0].transcript;
+        }
+        render(live);
+        send("interim", live);
+      };
+      rec.onerror = (e) => {
+        if (e.error === "no-speech" || e.error === "aborted") return;
+        wanted = false;
+        const m = { "not-allowed": "Доступ к микрофону запрещён — разрешите его в адресной строке (значок камеры/микрофона) и откройте окно заново.",
+                    "audio-capture": "Микрофон не найден — проверьте, что он подключён.",
+                    network: "Нет связи с сервисом распознавания речи — проверьте интернет." }[e.error];
+        showErr(m || ("Ошибка распознавания: " + e.error));
+      };
+      // Chrome сам останавливается после паузы — продолжаем, пока окно открыто
+      rec.onend = () => { if (wanted) { try { rec.start(); return; } catch (e) {} } setState(false); send("interim", ""); };
+      try { rec.start(); } catch (e) { showErr(e.message); }
+    }
+  }
+
+  toggleBtn.onclick = () => {
+    if (!rec) return;
+    if (recognizing) { wanted = false; rec.stop(); }
+    else { wanted = true; try { rec.start(); } catch (e) {} }
+  };
+  $("done").onclick = finish;
+  addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); finish(); } else if (e.key === "Escape") cancel(); });
+  addEventListener("pagehide", () => send("interim", ""));
+})();
+</script>
+</body>
+</html>
