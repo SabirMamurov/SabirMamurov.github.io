@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Документы продаж — возврат из Яндекса</title>
+<style>
+  :root { color-scheme: light dark; --bg: #f6f5f1; --ink: #1d1c1a; --muted: #6a6862; --accent: #1d6b57; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #161615; --ink: #ecebe6; --muted: #9a988f; --accent: #5fbf9f; } }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: var(--bg); color: var(--ink);
+         font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; padding: 16px; box-sizing: border-box; }
+  main { max-width: 420px; text-align: center; }
+  a { color: var(--accent); }
+  p { color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <h1 id="t">Возвращаемся в «Документы продаж»…</h1>
+  <p id="m"></p>
+</main>
+<script>
+// Яндекс возвращает сюда (https-адрес, который он принимает), а мы — в систему в локальной сети.
+// Куда возвращать — в state: «<одноразовый ключ>.<адрес системы в base64url>».
+// Пускаем только на адреса локальной сети, чтобы страницу нельзя было использовать для перенаправления куда угодно.
+(function () {
+  var q = new URLSearchParams(location.search);
+  var state = q.get("state") || "";
+  var dot = state.indexOf(".");
+  var origin = "";
+  try { origin = atob(state.slice(dot + 1).replace(/-/g, "+").replace(/_/g, "/")); } catch (e) {}
+  var ok = /^https?:\/\/(localhost|127\.0\.0\.1|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|[a-z0-9-]+\.(local|lan|test))(:\d+)?$/i.test(origin);
+  if (dot < 1 || !ok) {
+    document.getElementById("t").textContent = "Не удалось вернуться в «Документы продаж»";
+    document.getElementById("m").textContent = "Откройте систему и нажмите «Войти через Яндекс» ещё раз.";
+    return;
+  }
+  var back = new URL(origin + "/api/mail/yandex/callback");
+  ["code", "state", "error", "error_description"].forEach(function (k) { if (q.has(k)) back.searchParams.set(k, q.get(k)); });
+  document.getElementById("m").innerHTML = 'Если ничего не происходит, <a id="l">нажмите здесь</a>.';
+  document.getElementById("l").href = back.href;
+  location.replace(back.href);
+})();
+</script>
+</body>
+</html>
